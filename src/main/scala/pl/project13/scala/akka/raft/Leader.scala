@@ -7,204 +7,203 @@ import protocol._
 import config.RaftConfig
 
 private[raft] trait Leader {
-  this: RaftActor =>
-  
-  protected def raftConfig: RaftConfig
+	this: RaftActor ⇒
 
-  private val HeartbeatTimerName = "heartbeat-timer"
+	protected def raftConfig: RaftConfig
 
-  val leaderBehavior: StateFunction = {
-    case Event(ElectedAsLeader, m: LeaderMeta) =>
-      log.info("Became leader for {}", m.currentTerm)
-      initializeLeaderState(m.config.members)
-      startHeartbeat(m)
-      stay()
+	private val HeartbeatTimerName = "heartbeat-timer"
 
-    case Event(SendHeartbeat, m: LeaderMeta) =>
-      sendHeartbeat(m)
-      stay()
+	val leaderBehavior: StateFunction = {
+		case Event(ElectedAsLeader, m: LeaderMeta) ⇒
+			log.info("Became leader for {}", m.currentTerm)
+			initializeLeaderState(m.config.members)
+			startHeartbeat(m)
+			stay()
 
-    // already won election, but votes may still be coming in
-    case Event(_: ElectionMessage, _) =>
-      stay()
+		case Event(SendHeartbeat, m: LeaderMeta) ⇒
+			sendHeartbeat(m)
+			stay()
 
-    // client request
-    case Event(ClientMessage(client, cmd: Command), m: LeaderMeta) =>
-      log.info("Appending command: [{}] from {} to replicated log...", cmd, client)
+		// already won election, but votes may still be coming in
+		case Event(_: ElectionMessage, _) ⇒
+			stay()
 
-      val entry = Entry(cmd, m.currentTerm, replicatedLog.nextIndex, Some(client))
+		// client request
+		case Event(ClientMessage(client, cmd: Command), m: LeaderMeta) ⇒
+			log.info("Appending command: [{}] from {} to replicated log...", cmd, client)
 
-      log.debug("adding to log: {}", entry)
-      replicatedLog += entry
-      matchIndex.put(m.clusterSelf, entry.index)
-      log.debug("log status = {}", replicatedLog)
+			val entry = Entry(cmd, m.currentTerm, replicatedLog.nextIndex, Some(client))
 
-      val meta = maybeUpdateConfiguration(m, entry.command)
-      replicateLog(meta)
+			log.debug("adding to log: {}", entry)
+			replicatedLog += entry
+			matchIndex.put(m.clusterSelf, entry.index)
+			log.debug("log status = {}", replicatedLog)
 
-      if (meta.config.isPartOfNewConfiguration(m.clusterSelf))
-        stay() using meta
-      else
-        goto(Follower) using meta.forFollower // or maybe goto something else?
+			val meta = maybeUpdateConfiguration(m, entry.command)
+			replicateLog(meta)
 
-    // rogue Leader handling
-    case Event(append: AppendEntries[Command], m: LeaderMeta) if append.term > m.currentTerm =>
-      log.info("Leader (@ {}) got AppendEntries from fresher Leader (@ {}), will step down and the Leader will keep being: {}", m.currentTerm, append.term, sender())
-      stepDown(m)
+			if (meta.config.isPartOfNewConfiguration(m.clusterSelf))
+				stay() using meta
+			else
+				goto(Follower) using meta.forFollower // or maybe goto something else?
 
-    case Event(append: AppendEntries[Command], m: LeaderMeta) if append.term <= m.currentTerm =>
-      log.warning("Leader (@ {}) got AppendEntries from rogue Leader ({} @ {}); It's not fresher than self. Will send entries, to force it to step down.", m.currentTerm, sender(), append.term)
-      sendEntries(sender(), m)
-      stay()
-    // end of rogue Leader handling
+		// rogue Leader handling
+		case Event(append: AppendEntries[Command], m: LeaderMeta) if append.term > m.currentTerm ⇒
+			log.info("Leader (@ {}) got AppendEntries from fresher Leader (@ {}), will step down and the Leader will keep being: {}", m.currentTerm, append.term, sender())
+			stepDown(m)
 
-    // append entries response handling
+		case Event(append: AppendEntries[Command], m: LeaderMeta) if append.term <= m.currentTerm ⇒
+			log.warning("Leader (@ {}) got AppendEntries from rogue Leader ({} @ {}); It's not fresher than self. Will send entries, to force it to step down.", m.currentTerm, sender(), append.term)
+			sendEntries(sender(), m)
+			stay()
+		// end of rogue Leader handling
 
-    case Event(AppendRejected(term, index), m: LeaderMeta) if term > m.currentTerm =>
-      stopHeartbeat()
-      stepDown(m) // since there seems to be another leader!
+		// append entries response handling
 
-    case Event(msg: AppendRejected, m: LeaderMeta) =>
-      registerAppendRejected(follower(), msg, m)
+		case Event(AppendRejected(term, index), m: LeaderMeta) if term > m.currentTerm ⇒
+			stopHeartbeat()
+			stepDown(m) // since there seems to be another leader!
 
-    case Event(msg: AppendSuccessful, m: LeaderMeta) =>
-      registerAppendSuccessful(follower(), msg, m)
+		case Event(msg: AppendRejected, m: LeaderMeta) ⇒
+			registerAppendRejected(follower(), msg, m)
 
-    case Event(RequestConfiguration, m: LeaderMeta) =>
-      sender() ! ChangeConfiguration(m.config)
-      stay()
+		case Event(msg: AppendSuccessful, m: LeaderMeta) ⇒
+			registerAppendSuccessful(follower(), msg, m)
 
-    case Event(AskForState, _) =>
-      sender() ! IAmInState(Leader)
-      stay()
-  }
+		case Event(RequestConfiguration, m: LeaderMeta) ⇒
+			sender() ! ChangeConfiguration(m.config)
+			stay()
 
-  def initializeLeaderState(members: Set[ActorRef]) {
-    log.info("Preparing nextIndex and matchIndex table for followers, init all to: replicatedLog.lastIndex = {}", replicatedLog.lastIndex)
-    nextIndex = LogIndexMap.initialize(members, replicatedLog.lastIndex)
-    matchIndex = LogIndexMap.initialize(members, -1)
-  }
+		case Event(AskForState, _) ⇒
+			sender() ! IAmInState(Leader)
+			stay()
+	}
 
-  def sendEntries(follower: ActorRef, m: LeaderMeta) {
-    follower ! AppendEntries(
-      m.currentTerm,
-      replicatedLog,
-      fromIndex = nextIndex.valueFor(follower),
-      leaderCommitId = replicatedLog.committedIndex
-    )
-  }
+	def initializeLeaderState(members: Set[ActorRef]) {
+		log.info("Preparing nextIndex and matchIndex table for followers, init all to: replicatedLog.lastIndex = {}", replicatedLog.lastIndex)
+		nextIndex = LogIndexMap.initialize(members, replicatedLog.lastIndex)
+		matchIndex = LogIndexMap.initialize(members, -1)
+	}
 
-  def stopHeartbeat() {
-    cancelTimer(HeartbeatTimerName)
-  }
+	def sendEntries(follower: ActorRef, m: LeaderMeta) {
+		follower ! AppendEntries(
+			m.currentTerm,
+			replicatedLog,
+			fromIndex = nextIndex.valueFor(follower),
+			leaderCommitId = replicatedLog.committedIndex
+		)
+	}
 
-  def startHeartbeat(m: LeaderMeta) {
-    sendHeartbeat(m)
-    log.info("Starting hearbeat, with interval: {}", heartbeatInterval)
-    setTimer(HeartbeatTimerName, SendHeartbeat, heartbeatInterval, repeat = true)
-  }
+	def stopHeartbeat() {
+		cancelTimer(HeartbeatTimerName)
+	}
 
-  /** heartbeat is implemented as basically sending AppendEntry messages */
-  def sendHeartbeat(m: LeaderMeta) {
-    replicateLog(m)
-  }
+	def startHeartbeat(m: LeaderMeta) {
+		sendHeartbeat(m)
+		log.info("Starting hearbeat, with interval: {}", heartbeatInterval)
+		setTimer(HeartbeatTimerName, SendHeartbeat, heartbeatInterval, repeat = true)
+	}
 
-  def replicateLog(m: LeaderMeta) {
-    m.membersExceptSelf foreach { member =>
-      // todo remove me
-//      log.info("sending: {} to {}", AppendEntries(m.currentTerm, replicatedLog, fromIndex = nextIndex.valueFor(member), leaderCommitId = replicatedLog.committedIndex), member)
+	/** heartbeat is implemented as basically sending AppendEntry messages */
+	def sendHeartbeat(m: LeaderMeta) {
+		replicateLog(m)
+	}
 
-      member ! AppendEntries(
-        m.currentTerm,
-        replicatedLog,
-        fromIndex = nextIndex.valueFor(member),
-        leaderCommitId = replicatedLog.committedIndex
-      )
-    }
-  }
+	def replicateLog(m: LeaderMeta) {
+		m.membersExceptSelf foreach { member ⇒
+			// todo remove me
+			//      log.info("sending: {} to {}", AppendEntries(m.currentTerm, replicatedLog, fromIndex = nextIndex.valueFor(member), leaderCommitId = replicatedLog.committedIndex), member)
 
-  def registerAppendRejected(member: ActorRef, msg: AppendRejected, m: LeaderMeta) = {
-    val AppendRejected(followerTerm, followerIndex) = msg
+			member ! AppendEntries(
+				m.currentTerm,
+				replicatedLog,
+				fromIndex = nextIndex.valueFor(member),
+				leaderCommitId = replicatedLog.committedIndex
+			)
+		}
+	}
 
-    log.info("Follower {} rejected write: {} @ {}, back out the first index in this term and retry", follower(), followerTerm, followerIndex)
+	def registerAppendRejected(member: ActorRef, msg: AppendRejected, m: LeaderMeta) = {
+		val AppendRejected(followerTerm, followerIndex) = msg
 
-    nextIndex.putIfSmaller(follower(), followerIndex)
+		log.info("Follower {} rejected write: {} @ {}, back out the first index in this term and retry", follower(), followerTerm, followerIndex)
 
-//    todo think if we send here or keep in heartbeat
-    sendEntries(follower(), m)
+		nextIndex.putIfSmaller(follower(), followerIndex)
 
-    stay()
-  }
+		//    todo think if we send here or keep in heartbeat
+		sendEntries(follower(), m)
 
-  def registerAppendSuccessful(member: ActorRef, msg: AppendSuccessful, m: LeaderMeta) = {
-    val AppendSuccessful(followerTerm, followerIndex) = msg
+		stay()
+	}
 
-    log.info("Follower {} took write in term: {}, index: {}", follower(), followerTerm, nextIndex.valueFor(follower()))
+	def registerAppendSuccessful(member: ActorRef, msg: AppendSuccessful, m: LeaderMeta) = {
+		val AppendSuccessful(followerTerm, followerIndex) = msg
 
-    // update our tables for this member
-    nextIndex.put(follower(), followerIndex)
-    matchIndex.putIfGreater(follower(), nextIndex.valueFor(follower()))
+		log.info("Follower {} took write in term: {}, index: {}", follower(), followerTerm, nextIndex.valueFor(follower()))
 
-    replicatedLog = maybeCommitEntry(m, matchIndex, replicatedLog)
+		// update our tables for this member
+		nextIndex.put(follower(), followerIndex)
+		matchIndex.putIfGreater(follower(), nextIndex.valueFor(follower()))
 
-    stay()
-  }
+		replicatedLog = maybeCommitEntry(m, matchIndex, replicatedLog)
 
-  def maybeCommitEntry(m: LeaderMeta, matchIndex: LogIndexMap, replicatedLog: ReplicatedLog[Command]): ReplicatedLog[Command] = {
-    val indexOnMajority = matchIndex.consensusForIndex(m.config)
-    val willCommit = indexOnMajority > replicatedLog.committedIndex
+		stay()
+	}
 
-    if (willCommit) log.info("Consensus for persisted index: {}. (Comitted index: {}, will commit now: {})", indexOnMajority, replicatedLog.committedIndex, willCommit)
-    else log.info("Consensus for persisted index: {}. (Comitted index: {})", indexOnMajority, replicatedLog.committedIndex)
+	def maybeCommitEntry(m: LeaderMeta, matchIndex: LogIndexMap, replicatedLog: ReplicatedLog[Command]): ReplicatedLog[Command] = {
+		val indexOnMajority = matchIndex.consensusForIndex(m.config)
+		val willCommit = indexOnMajority > replicatedLog.committedIndex
 
-    if (willCommit) {
-      val entries = replicatedLog.between(replicatedLog.committedIndex, indexOnMajority)
-      
-      entries foreach { entry =>
-        handleCommitIfSpecialEntry.applyOrElse(entry, default = handleNormalEntry)
+		if (willCommit) log.info("Consensus for persisted index: {}. (Comitted index: {}, will commit now: {})", indexOnMajority, replicatedLog.committedIndex, willCommit)
+		else log.info("Consensus for persisted index: {}. (Comitted index: {})", indexOnMajority, replicatedLog.committedIndex)
 
-        if (raftConfig.publishTestingEvents)
-          context.system.eventStream.publish(EntryCommitted(entry.index, m.clusterSelf))
-      }
+		if (willCommit) {
+			val entries = replicatedLog.between(replicatedLog.committedIndex, indexOnMajority)
 
-      replicatedLog.commit(indexOnMajority)
-    } else {
-      replicatedLog
-    }
-  }
+			entries foreach { entry ⇒
+				handleCommitIfSpecialEntry.applyOrElse(entry, default = handleNormalEntry)
 
-  /**
-   * Used for handling special messages, such as ''new Configuration'' or a ''Snapshot entry'' being comitted.
-   *
-   * Note that special log entries will NOT be propagated to the client state machine.
-   */
-  private val handleCommitIfSpecialEntry: PartialFunction[Entry[Command], Unit] = {
-    case Entry(jointConfig: JointConsensusClusterConfiguration, _, _, _) =>
-      self ! ClientMessage(self, jointConfig.transitionToStable) // will cause comitting of only "new" config
+				if (raftConfig.publishTestingEvents)
+					context.system.eventStream.publish(EntryCommitted(entry.index, m.clusterSelf))
+			}
 
-    case Entry(stableConfig: StableClusterConfiguration, _, _, _) =>
-      // simply ignore, once this message is in our log we started using the new configuration anyway,
-      // there's no need to apply this message onto the client state machine.
-  }
+			replicatedLog.commit(indexOnMajority)
+		}
+		else {
+			replicatedLog
+		}
+	}
 
-  private val handleNormalEntry: PartialFunction[Any, Unit] = {
-    case entry: Entry[Command] =>
-      log.info("Committing log at index: {}; Applying command: {}, will send result to client: {}", entry.index, entry.command, entry.client)
-      val result = apply(entry.command) // todo what if we apply a message the actor didnt understand? should fail "nicely"
-      entry.client foreach { _ ! result }
-  }
+	/** Used for handling special messages, such as ''new Configuration'' or a ''Snapshot entry'' being comitted.
+	  *
+	  * Note that special log entries will NOT be propagated to the client state machine.
+	  */
+	private val handleCommitIfSpecialEntry: PartialFunction[Entry[Command], Unit] = {
+		case Entry(jointConfig: JointConsensusClusterConfiguration, _, _, _) ⇒
+			self ! ClientMessage(self, jointConfig.transitionToStable) // will cause comitting of only "new" config
 
-  /**
-   * Configurations must be used by each node right away when they get appended to their logs (doesn't matter if not committed).
-   * This method updates the Meta object if a configuration change is discovered.
-   */
-  def maybeUpdateConfiguration(meta: LeaderMeta, entry: Command): LeaderMeta = entry match {
-    case newConfig: ClusterConfiguration if newConfig.isNewerThan(meta.config) =>
-      log.info("Appended new configuration, will start using it now: {}", newConfig)
-      meta.withConfig(newConfig)
+		case Entry(stableConfig: StableClusterConfiguration, _, _, _) ⇒
+		// simply ignore, once this message is in our log we started using the new configuration anyway,
+		// there's no need to apply this message onto the client state machine.
+	}
 
-    case _ =>
-      meta
-  }
+	private val handleNormalEntry: PartialFunction[Any, Unit] = {
+		case entry: Entry[Command] ⇒
+			log.info("Committing log at index: {}; Applying command: {}, will send result to client: {}", entry.index, entry.command, entry.client)
+			val result = apply(entry.command) // todo what if we apply a message the actor didnt understand? should fail "nicely"
+			entry.client foreach { _ ! result }
+	}
+
+	/** Configurations must be used by each node right away when they get appended to their logs (doesn't matter if not committed).
+	  * This method updates the Meta object if a configuration change is discovered.
+	  */
+	def maybeUpdateConfiguration(meta: LeaderMeta, entry: Command): LeaderMeta = entry match {
+		case newConfig: ClusterConfiguration if newConfig.isNewerThan(meta.config) ⇒
+			log.info("Appended new configuration, will start using it now: {}", newConfig)
+			meta.withConfig(newConfig)
+
+		case _ ⇒
+			meta
+	}
 
 }

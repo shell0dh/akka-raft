@@ -8,7 +8,7 @@ object ApplicationBuild extends Build {
 
   val appName = "akka-raft"
   val appVersion = "1.0-SNAPSHOT"
-  val appScalaVersion = "2.10.2"
+  val appScalaVersion = "2.10.4"
 
   import Dependencies._
   import Resolvers._
@@ -25,23 +25,29 @@ object ApplicationBuild extends Build {
     )
 
   lazy val multiJvmSettings = SbtMultiJvm.multiJvmSettings ++ Seq(
-     // make sure that MultiJvm test are compiled by the default test compilation
-     compile in MultiJvm <<= (compile in MultiJvm) triggeredBy (compile in Test),
-     // disable parallel tests
-     parallelExecution in Test := false,
-     // make sure that MultiJvm tests are executed by the default test target
-     executeTests in Test <<=
-       ((executeTests in Test), (executeTests in MultiJvm)) map {
-         case ((_, testResults), (_, multiJvmResults))  =>
-           val results = testResults ++ multiJvmResults
-           (Tests.overall(results.values), results)
-     }
-   )
+    compile in MultiJvm <<= (compile in MultiJvm) triggeredBy (compile in Test),
+    //disable parallel tests
+    parallelExecution in Test := false,
+    //make sure that MultiJvm tests are executed by the default test target
+    executeTests in Test <<=
+      ((executeTests in Test), (executeTests in MultiJvm)) map {
+        case ((testResults), (multiJvmResults)) =>
+          val overall =
+            if (testResults.overall.id < multiJvmResults.overall.id)
+              multiJvmResults.overall
+            else
+              testResults.overall
+          Tests.Output(overall,
+            testResults.events ++ multiJvmResults.events,
+            testResults.summaries ++ multiJvmResults.summaries)
+      }
+
+  )
 
 }
 
 object Dependencies {
-    val akkaVersion = "2.3-SNAPSHOT"
+    val akkaVersion = "2.3.5"
     val generalDependencies = Seq(
       "com.typesafe.akka" %% "akka-actor"     % akkaVersion,
       "com.typesafe.akka" %% "akka-slf4j"     % akkaVersion,
@@ -53,13 +59,24 @@ object Dependencies {
       "com.typesafe.akka" %% "akka-multi-node-testkit" % akkaVersion % "test",
 
       "org.mockito"        % "mockito-core"   % "1.9.5"     % "test",
-      "org.scalatest"     %% "scalatest"      % "2.0"       % "test"
+      "org.scalatest"     %% "scalatest"      % "2.1.7"       % "test"
     )
   }
 
 object Resolvers {
   val additionalResolvers = Seq(
-    "typesafe snapshots" at "http://repo.akka.io/snapshots/"
+"Local Maven Repository" at "file://" + Path.userHome.absolutePath + "/.m2/repository",
+      "Spray repo" at "http://repo.spray.io",
+      "Typesafe repo" at "http://repo.typesafe.com/typesafe/releases/",
+      "releases" at "http://oss.sonatype.org/content/repositories/releases",
+      "github-releases" at "http://oss.sonatype.org/content/repositories/github-releases/",
+      "cloudera.repos" at "https://repository.cloudera.com/artifactory/libs-release",
+      "maven2" at " http://repo1.maven.org/maven2/",
+      "Apache repo" at "https://repository.apache.org/content/repositories/releases"
+      //"360buy-develop.releases" at "http://artifactory.360buy-develop.com/libs-releases",
+      //"360buy-develop.snapshots" at "http://artifactory.360buy-develop.com/libs-snapshots",
+      //      "snapshots" at "http://oss.sonatype.org/content/repositories/snapshots",
+      //      "plugins-cloudera" at "https://repository.cloudera.com/artifactory/plugins-release"
   )
 
 }

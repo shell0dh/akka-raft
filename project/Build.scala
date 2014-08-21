@@ -73,8 +73,6 @@ object Resolvers {
       "cloudera.repos" at "https://repository.cloudera.com/artifactory/libs-release",
       "maven2" at " http://repo1.maven.org/maven2/",
       "Apache repo" at "https://repository.apache.org/content/repositories/releases"
-      //"360buy-develop.releases" at "http://artifactory.360buy-develop.com/libs-releases",
-      //"360buy-develop.snapshots" at "http://artifactory.360buy-develop.com/libs-snapshots",
       //      "snapshots" at "http://oss.sonatype.org/content/repositories/snapshots",
       //      "plugins-cloudera" at "https://repository.cloudera.com/artifactory/plugins-release"
   )
